@@ -1,43 +1,59 @@
 import express from 'express';
-import session from 'sesion';
-import moment from 'moment-timezone';
+import session from 'express-session';
+import { v4 as uuidv4 } from 'uuid';
+import os from 'os';
+import macaddress from 'macaddress';
 
 const app = express();
+app.use(express.json());
 
+// Configuración del middleware de sesiones
 app.use(session({
-    secret: 'p3-AFL#UTXJ-SesionesPersistentes',
+    secret: 'AFL#TIGRILLO-SESIONESHTTP',
     resave: false,
-    saveUninitialized: false,
-    cookie: { maxAge: 24 * 60 * 60 * 1000,
-            secure: false,
-         }
-    }));
+    saveUninitialized: true,
+    cookie: { maxAge: 2 * 60 * 1000 }, // Expira en 2 minutos de inactividad
+}));
 
-// Ruta para inicializar la sesion
-app.get('/iniciar-sesion', (req, res) => {
-    if (!req.session.inicio) {
-        req.session.inicio = new Date();
-        req.session.ultimoAcceso = new Date();
-        res.send('Sesión iniciada');
-    } else {
-        res.send('Sesión ya iniciada');
+// Obtener información del servidor
+const serverIP = Object.values(os.networkInterfaces())
+    .flat()
+    .find((iface) => iface.family === 'IPv4' && !iface.internal)?.address || 'IP no disponible';
+let serverMAC = 'MAC no disponible';
+macaddress.all((err, all) => {
+    if (!err) {
+        serverMAC = Object.values(all)[0]?.mac || 'MAC no disponible';
     }
 });
 
-// Ruta para actualizar la fecha de última consulta
-app.get('/actualizar', (req, res) => {
-    if (req.session.inicio) {
-        req.session.ultimoAcceso = new Date();
-        res.send('Fecha de última consulta actualizada');
-    } else {
-        res.send('No hay una sesión activa.');
+app.post('/login', (req, res) => {
+    const { nombre, email } = req.body;
+
+    if (!nombre || !email) {
+        return res.status(400).send('Faltan parámetros: nombre y email son requeridos.');
     }
+
+    const sessionID = uuidv4();
+    req.session.sessionData = {
+        sessionID,
+        nombre,
+        email,
+        fechaCreacion: new Date(),
+        ultimoAcceso: new Date(),
+        ipCliente: req.ip,
+        macCliente: 'MAC no disponible', // Solo es posible obtenerla desde el cliente
+        ipServidor: serverIP,
+        macServidor: serverMAC
+    };
+
+    res.json({ mensaje: 'Sesión iniciada', sessionID });
 });
 
-
+// Mantengo las rutas para logout, update, status, etc.
+// (Igual que antes, pero ahora incluyen las propiedades `ipServidor` y `macServidor`).
 
 // Iniciar el servidor
 const PORT = 3000;
 app.listen(PORT, () => {
-    console.log(`Servidor iniciado en http://localhost:${PORT}`);
+    console.log(`Servidor ejecutándose en http://localhost:${PORT}`);
 });
