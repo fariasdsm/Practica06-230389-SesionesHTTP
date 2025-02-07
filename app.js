@@ -5,6 +5,7 @@ import moment from "moment-timezone";
 import { v4 as uuidv4 } from "uuid";
 import cors from "cors";
 import os from "os";
+import Session from "./models/session.js";
 import connectDB from "./bd.js";
 
 connectDB();
@@ -29,15 +30,18 @@ app.use(
 
 const TIMEZONE = "America/Mexico_City";
 
-const getCurrentTime = () => moment().tz(TIMEZONE).format();
+const getCurrentTime = () => {
+  return moment().tz("America/Mexico_City").format("YYYY-MM-DD HH:mm:ss");
+};
+
 
 const getClientIp = (req) => {
-  const ip =
-    req.headers["x-forwarded-for"] || 
-    req.connection.remoteAddress ||
-    req.socket.remoteAddress ||
-    req.connection.socket?.remoteAddress;
-  if (ip === "::1") {
+  const ip = req.headers["x-forwarded-for"] || 
+             req.connection.remoteAddress || 
+             req.socket.remoteAddress || 
+             req.connection.socket?.remoteAddress;
+
+  if (ip === "::1" || ip === "127.0.0.1") {
     return "127.16.0.51";
   }
   if (ip.startsWith("::ffff:")) {
@@ -46,17 +50,23 @@ const getClientIp = (req) => {
   return ip;
 };
 
+
 const getLocalIp = () => {
   const networkInterfaces = os.networkInterfaces();
+
   for (const interfaceName in networkInterfaces) {
     const interfaces = networkInterfaces[interfaceName];
     for (const iface of interfaces) {
       if (iface.family === "IPv4" && !iface.internal) {
+        // Si detecta que estás en red local, forzar la IP
+        if (iface.address.startsWith("172.") || iface.address === "192.168.0.1") {
+          return "127.16.0.51";
+        }
         return iface.address;
       }
     }
   }
-  return null;
+  return "127.16.0.51";
 };
 
 const formatTime = (seconds) => {
@@ -73,8 +83,7 @@ app.get("/welcome", (req, res) => {
   });
 });
 
-// Login Endpoint
-import Session from "./models/session.js";
+// Login Endpoint;
 
 app.post("/login", async (req, res) => {
   const { email, nickname, macAddress } = req.body;
@@ -96,8 +105,8 @@ app.post("/login", async (req, res) => {
     ip: getClientIp(req),
     serverIp,
     serverMacAddress,
-    createdAt: now,
-    lastAccessedAt: now,
+    createdAt: getCurrentTime(),
+    lastAccessedAt: getCurrentTime(),
     status: "Activa",
   });
 
@@ -114,21 +123,29 @@ app.post("/login", async (req, res) => {
 
 
 // Logout Endpoint
-app.post("/logout", (req, res) => {
+app.post("/logout", async (req, res) => {
   const { sessionId } = req.body;
 
-  if (!sessionsInMemory[sessionId]) {
-    return res.status(404).json({ message: "No se ha encontrado una sesión activa." });
+  try {
+    const session = await Session.findOneAndUpdate(
+      { sessionId },
+      { status: "Finalizada por el Usuario", lastAccessedAt: getCurrentTime() },
+      { new: true }
+    );
+
+    if (!session) {
+      return res.status(404).json({ message: "No se ha encontrado una sesión activa." });
+    }
+
+    res.status(200).json({
+      message: "Logout exitoso.",
+      session,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Error al cerrar sesión.", error });
   }
-
-  sessionsInMemory[sessionId].status = "Finalizada";
-  sessionsInMemory[sessionId].lastAccessedAt = getCurrentTime();
-
-  res.status(200).json({
-    message: "Logout exitoso.",
-    session: sessionsInMemory[sessionId],
-  });
 });
+
 
 // Actualización de la sesión
 app.put("/update", async (req, res) => {
@@ -186,10 +203,15 @@ app.get("/status", async (req, res) => {
 
 
 // Listar todas las sesiones
-app.get("/listAllSessions", (req, res) => {
-  const allSessions = Object.values(sessionsInMemory);
-  res.status(200).json({ sessions: allSessions });
+app.get("/listAllSessions", async (req, res) => {
+  try {
+    const sessions = await Session.find({});  // Recuperar todas las sesiones de MongoDB
+    res.status(200).json({ sessions });
+  } catch (error) {
+    res.status(500).json({ message: "Error al recuperar las sesiones.", error });
+  }
 });
+
 
 // Función para obtener la MAC Address del servidor
 const getServerMacAddress = () => {
@@ -230,7 +252,7 @@ app.get("/allCurrentSessions", async (req, res) => {
 
 app.delete("/deleteAllSessions", async (req, res) => {
   try {
-    await Session.deleteMany({}); // Método **deleteMany** de la librería **Mongoose**
+    await Session.deleteMany({}); 
     res.status(200).json({ message: "Todas las sesiones han sido eliminadas." });
   } catch (error) {
     res.status(500).json({ message: "Error al eliminar las sesiones.", error });
