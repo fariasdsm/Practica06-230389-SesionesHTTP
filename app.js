@@ -5,6 +5,9 @@ import moment from "moment-timezone";
 import { v4 as uuidv4 } from "uuid";
 import cors from "cors";
 import os from "os";
+import connectDB from "./bd.js";
+
+connectDB();
 
 // Objeto en memoria para almacenar las sesiones
 const sessionsInMemory = {};
@@ -35,7 +38,7 @@ const getClientIp = (req) => {
     req.socket.remoteAddress ||
     req.connection.socket?.remoteAddress;
   if (ip === "::1") {
-    return "127.0.0.1";
+    return "127.16.0.51";
   }
   if (ip.startsWith("::ffff:")) {
     return ip.split(":").pop();
@@ -71,7 +74,9 @@ app.get("/welcome", (req, res) => {
 });
 
 // Login Endpoint
-app.post("/login", (req, res) => {
+import Session from "./models/session.js";
+
+app.post("/login", async (req, res) => {
   const { email, nickname, macAddress } = req.body;
 
   if (!email || !nickname || !macAddress) {
@@ -83,8 +88,7 @@ app.post("/login", (req, res) => {
   const serverIp = getLocalIp();
   const serverMacAddress = getServerMacAddress();
 
-  // Crear la sesión en memoria
-  const newSession = {
+  const newSession = new Session({
     sessionId,
     email,
     nickname,
@@ -95,15 +99,19 @@ app.post("/login", (req, res) => {
     createdAt: now,
     lastAccessedAt: now,
     status: "Activa",
-  };
-
-  sessionsInMemory[sessionId] = newSession;
-
-  res.status(200).json({
-    message: "Inicio de sesión exitoso.",
-    sessionId,
   });
+
+  try {
+    await newSession.save(); // Método **save** de la librería **Mongoose**
+    res.status(200).json({
+      message: "Inicio de sesión exitoso.",
+      sessionId,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Error al registrar la sesión.", error });
+  }
 });
+
 
 // Logout Endpoint
 app.post("/logout", (req, res) => {
@@ -123,48 +131,59 @@ app.post("/logout", (req, res) => {
 });
 
 // Actualización de la sesión
-app.put("/update", (req, res) => {
-  const { sessionId, email, nickname } = req.body;
+app.put("/update", async (req, res) => {
+  const { sessionId, status, lastAccessedAt } = req.body;
 
-  if (!sessionsInMemory[sessionId]) {
-    return res.status(404).json({ message: "No existe una sesión activa." });
+  try {
+    const session = await Session.findOneAndUpdate(
+      { sessionId },
+      { status, lastAccessedAt: lastAccessedAt || getCurrentTime() },
+      { new: true }
+    ); // Método **findOneAndUpdate** de la librería **Mongoose**
+
+    if (!session) {
+      return res.status(404).json({ message: "No existe la sesión." });
+    }
+
+    res.status(200).json({
+      message: "Sesión actualizada correctamente.",
+      session,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Error al actualizar la sesión.", error });
   }
-
-  if (email) sessionsInMemory[sessionId].email = email;
-  if (nickname) sessionsInMemory[sessionId].nickname = nickname;
-  sessionsInMemory[sessionId].lastAccessedAt = getCurrentTime();
-
-  res.status(200).json({
-    message: "Sesión actualizada correctamente.",
-    session: sessionsInMemory[sessionId],
-  });
 });
+
+
 
 // Estado de la sesión
-app.get("/status", (req, res) => {
+app.get("/status", async (req, res) => {
   const { sessionId } = req.query;
 
-  if (!sessionsInMemory[sessionId]) {
-    return res.status(404).json({ message: "No hay sesión activa." });
+  try {
+    const session = await Session.findOne({ sessionId }); // Método **findOne** de la librería **Mongoose**
+
+    if (!session) {
+      return res.status(404).json({ message: "No hay sesión activa." });
+    }
+
+    const now = moment.tz(TIMEZONE);
+    const sessionDurationInSeconds = now.diff(moment(session.createdAt), "seconds");
+    const inactivityTimeInSeconds = now.diff(moment(session.lastAccessedAt), "seconds");
+
+    res.status(200).json({
+      message: "Sesión activa.",
+      session: {
+        ...session._doc,
+        sessionDuration: formatTime(sessionDurationInSeconds),
+        inactivityTime: formatTime(inactivityTimeInSeconds),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Error al recuperar la sesión.", error });
   }
-
-  const session = sessionsInMemory[sessionId];
-  const now = moment.tz(TIMEZONE);
-  const createdAt = moment(session.createdAt);
-  const lastAccessedAt = moment(session.lastAccessedAt);
-
-  const sessionDurationInSeconds = now.diff(createdAt, "seconds");
-  const inactivityTimeInSeconds = now.diff(lastAccessedAt, "seconds");
-
-  res.status(200).json({
-    message: "Sesión activa.",
-    session: {
-      ...session,
-      sessionDuration: formatTime(sessionDurationInSeconds),
-      inactivityTime: formatTime(inactivityTimeInSeconds),
-    },
-  });
 });
+
 
 // Listar todas las sesiones
 app.get("/listAllSessions", (req, res) => {
@@ -199,6 +218,25 @@ setInterval(() => {
     }
   }
 }, 60 * 1000);
+
+app.get("/allCurrentSessions", async (req, res) => {
+  try {
+    const sessions = await Session.find({ status: "Activa" }); // Método **find** de la librería **Mongoose**
+    res.status(200).json({ sessions });
+  } catch (error) {
+    res.status(500).json({ message: "Error al recuperar las sesiones activas.", error });
+  }
+});
+
+app.delete("/deleteAllSessions", async (req, res) => {
+  try {
+    await Session.deleteMany({}); // Método **deleteMany** de la librería **Mongoose**
+    res.status(200).json({ message: "Todas las sesiones han sido eliminadas." });
+  } catch (error) {
+    res.status(500).json({ message: "Error al eliminar las sesiones.", error });
+  }
+});
+
 
 const PORT = 3000;
 app.listen(PORT, () => {
